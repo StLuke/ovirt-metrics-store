@@ -1,0 +1,143 @@
+---
+# Setup repositories
+- name: Install necessary packages
+  hosts: all
+  tasks:
+    - name: Set variables
+      set_fact:
+        file_path: '/root/elasticsearch.rpm'
+        elastic_url: '"https://download.elastic.co/elasticsearch/release/org/elasticsearch/distribution/rpm/elasticsearch/2.3.5/elasticsearch-2.3.5.rpm"'
+    - name: Remove rpm if it was already downloaded
+      file:
+        path: "{{ file_path }}"
+        state: absent
+      when: remove_old_elastic is defined
+    - name: Download elastic search from official pages
+      get_url:
+        url: "{{ elastic_url }}"
+        dest: "{{ file_path }}"
+    - name: Install the rpm of elastic search
+      yum:
+        name: "{{ file_path }}"
+        state: "present"
+    - name: Install ovirt repo for fluentd
+      yum:
+        name: "http://resources.ovirt.org/pub/yum-repo/ovirt-release-master.rpm"
+        state: present
+    - name: Install necessary packages
+      yum:
+        name: "{{ item }}"
+        state: "present"
+      with_items:
+        - "kibana"
+        - "fluentd"
+        - "rubygem-fluent-plugin-elasticsearch"
+    - name: Install fluentd
+      yum:
+        name: "fluentd"
+        state: "present"
+    - name: Install fluentd
+      yum:
+        name: "rubygem-fluent-plugin-elasticsearch"
+        state: "present"
+
+
+- name: Set up fluentd
+  hosts: all
+  tasks:
+    - name: Download config for fluentd to metrics machine
+      copy:
+        src: ../conf/metrics-store-fluentd.conf
+        dest: /etc/fluentd/fluent.conf
+        owner: fluentd
+        group: fluentd
+        mode: 0644
+        backup: yes
+
+    - name: Enable listening of elasticsearch
+      lineinfile:
+        dest: /etc/elasticsearch/elasticsearch.yml
+        line: "{{ item }}"
+        state: present
+      with_items:
+        - 'http.cors.allow-origin: "*"'
+        - 'network.host: "localhost"'
+    - name: Copy firewall foward xml
+      copy:
+        src: ../conf/ovirt-fluentd-forward.xml
+        dest: /etc/firewalld/services/
+    - name: restart firewalld service to reload config
+      service:
+        name: firewalld
+        state: restarted
+    - name: Open firewall for fluentd foward
+      firewalld:
+        service: ovirt-fluentd-forward
+        zone: public
+        permanent: true
+        immediate: yes
+        state: enabled
+    - name: Install secure forward rubygem
+      yum:
+        name: rubygem-fluent-plugin-secure-forward
+        state: present
+
+    - name: Create direcotry for fluentd certs
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: 750
+        owner: fluentd
+        group: fluentd
+      with_items:
+        - "/etc/pki/fluentd/certs"
+        - "/etc/pki/fluentd/requests"
+        - "/etc/pki/fluentd/keys"
+      # TODO: generate certificate
+
+
+    - name: Restart fluentd service and check its running
+      service:
+        name: fluentd
+        state: "{{ item }}"
+        enabled: yes
+      with_items:
+        - restarted
+        - started
+      tags:
+        - always
+
+- name: Set-up Kibana
+  hosts: all
+  tasks:
+    - name: Enable kibana to listen
+      lineinfile:
+        dest: /etc/kibana/kibana.yml
+        line: 'server.host: "localhost"'
+        state: present
+    - name: Restart elasticsearch service
+      service:
+        name: kibanba
+        state: "{{ item }}"
+        enabled: yes
+      with_items:
+        - restarted
+        - started
+
+- name: Start elasticsearch service and check its running
+  hosts: all
+  tasks:
+    - name: Make sure java is installed on the machine
+      yum:
+        name: java
+        state: present
+    - name: Restart elasticsearch service
+      service:
+        name: elasticsearch
+        state: "{{ item }}"
+        enabled: yes
+      with_items:
+        - restarted
+        - started
+      tags:
+        - always
