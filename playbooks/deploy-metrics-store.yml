@@ -117,7 +117,7 @@
         state: present
     - name: Restart elasticsearch service
       service:
-        name: kibanba
+        name: kibana
         state: "{{ item }}"
         enabled: yes
       with_items:
