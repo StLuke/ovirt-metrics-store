@@ -1,5 +1,4 @@
 ---
-# Setup repositories
 - name: Install necessary packages
   hosts: all
   tasks:
@@ -70,6 +69,7 @@
       service:
         name: firewalld
         state: restarted
+
     - name: Open firewall for fluentd foward
       firewalld:
         service: ovirt-fluentd-forward
@@ -93,7 +93,12 @@
         - "/etc/pki/fluentd/certs"
         - "/etc/pki/fluentd/requests"
         - "/etc/pki/fluentd/keys"
-      # TODO: generate certificate
+
+    - name: Generate key certificate
+      command: openssl genrsa -out /etc/pki/fluentd/keys/fluentd-key.pem -passout pass:central-password -des3 2048
+
+    - name: Generate request certificate
+      command: openssl req -new -days 365 -key /etc/pki/fluentd/keys/fluentd-key.pem -out /etc/pki/fluentd/requests/fluentd-request.pem -passin pass:central-password -batch -subj /
 
 
     - name: Restart fluentd service and check its running
@@ -110,12 +115,15 @@
 - name: Set-up Kibana
   hosts: all
   tasks:
-    - name: Enable kibana to listen
-      lineinfile:
-        dest: /etc/kibana/kibana.yml
-        line: 'server.host: "localhost"'
-        state: present
-    - name: Restart elasticsearch service
+    - name: Open firewall port for kibana
+      firewalld:
+        port: 5601/tcp
+        zone: public
+        state: enabled
+        immediate: yes
+        permanent: true
+
+    - name: Restart kibaba service
       service:
         name: kibana
         state: "{{ item }}"
@@ -123,6 +131,19 @@
       with_items:
         - restarted
         - started
+      tags:
+        - always
+
+    - name: Set variables
+      set_fact:
+        kibana_url_metrics: 'http://localhost:9200/_template/ovirt_metrics'
+        kibana_url_metadata: 'http://localhost:9200/_template/ovirt_metadata'
+        kibana_template_ovirt_metrics: '\{ "template": "ovirt-metrics-", "order": 1, "settings": { "number_of_shards": 1 , "number_of_replicas": 1 }, "mappings": { "host_statistics": { "_parent": { "type": "host_metadata" }, "dynamic_templates": [ { "strings": { "mapping": { "index": "not_analyzed", "type": "string" }, "match_mapping_type": "string", "match": "" } } ] } } }'
+        kibana_template_ovirt_metadata: '\{ "template": "ovirt-metadata*", "order": 1, "settings": { "number_of_shards": 1, "number_of_replicas": 1 }, "mappings": { "vm_metadata": { "dynamic_templates": [ { "strings": { "mapping": { "index": "not_analyzed", "type": "string" }, "match_mapping_type": "string", "match": "" } } ] }, "host_metadata": { "dynamic_templates": [ { "strings": { "mapping": { "index": "not_analyzed", "type": "string" }, "match_mapping_type": "string", "match": "" } } ] } } }'
+    - name: Create index ovirt-metrics-
+      command: curl -XPUT "{{ kibana_url_metrics }}"  -d  "{{ kibana_template_ovirt_metrics }}"
+    - name: Create index ovirt-metadata
+      command: curl -XPUT "{{ kibana_url_metadata }}"  -d  "{{ kibana_template_ovirt_metadata }}"
 
 - name: Start elasticsearch service and check its running
   hosts: all
