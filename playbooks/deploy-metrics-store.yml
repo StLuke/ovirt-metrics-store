@@ -103,7 +103,7 @@
         src: "{{ item }}"
         dest: /etc/firewalld/services/
       with_items:
-        - '../conf/fluentd-secure-forward.conf'
+        - '../conf/ovirt-fluentd-secure-forward.xml'
         - '../conf/ovirt-fluentd-forward.xml'
     - name: restart firewalld service to reload config
       service:
@@ -112,11 +112,14 @@
 
     - name: Open firewall for fluentd foward
       firewalld:
-        service: ovirt-fluentd-forward
+        service: "{{ item }}"
         zone: public
         permanent: true
         immediate: yes
         state: enabled
+      with_items:
+        - 'ovirt-fluentd-forward'
+        - 'ovirt-fluentd-secure-forward'
 
     # TODO: Is this still needed?
     - name: Install secure forward rubygem
@@ -245,6 +248,6 @@
         line: "{{ item }}"
         state: present
       with_items:
-        - "local_fluentd_ca_cert_path: /etc/ovirt-engine-metrics/fluentd_ca_cert.pem"
+        - "local_fluentd_ca_cert_path: /etc/pki/ovirt-engine/ca.pem"
         - "fluentd_shared_key: topsecret"
         - "fluentd_fluentd_host: {{ metrics_store_fqdn }}"
