@@ -1,11 +1,11 @@
 ---
 - name: Install necessary packages
-  hosts: all
+  hosts: metrics-store
   tasks:
     - name: Set variables
       set_fact:
         file_path: '/root/elasticsearch.rpm'
-        elastic_url: '"https://download.elastic.co/elasticsearch/release/org/elasticsearch/distribution/rpm/elasticsearch/2.3.5/elasticsearch-2.3.5.rpm"'
+        elastic_url: 'https://download.elastic.co/elasticsearch/release/org/elasticsearch/distribution/rpm/elasticsearch/2.3.5/elasticsearch-2.3.5.rpm'
     - name: Remove rpm if it was already downloaded
       file:
         path: "{{ file_path }}"
@@ -31,6 +31,11 @@
         - "kibana"
         - "fluentd"
         - "rubygem-fluent-plugin-elasticsearch"
+        - "rsync"
+    - name: Start rsync
+      service:
+        name: firewalld
+        state: started
     - name: Install fluentd
       yum:
         name: "fluentd"
@@ -42,8 +47,16 @@
 
 
 - name: Set up fluentd
-  hosts: all
+  hosts: metrics-store
   tasks:
+    - name: Create config direcotry for fluentd
+      file:
+        state: directory
+        path: /etc/fluentd/fluent.conf.d
+        owner: fluentd
+        group: fluentd
+
+
     - name: Download config for fluentd to metrics machine
       copy:
         src: ../conf/metrics-store-fluentd.conf
@@ -53,6 +66,14 @@
         mode: 0644
         backup: yes
 
+    - name: Download config for fluentd to metrics machine
+      copy:
+        src: ../conf/fluentd-secure-forward.conf
+        dest: /etc/fluentd/fluent.conf.d/fluentd-secure-forward.conf
+        owner: fluentd
+        group: fluentd
+        mode: 0644
+
     - name: Enable listening of elasticsearch
       lineinfile:
         dest: /etc/elasticsearch/elasticsearch.yml
@@ -61,10 +82,29 @@
       with_items:
         - 'http.cors.allow-origin: "*"'
         - 'network.host: "localhost"'
-    - name: Copy firewall foward xml
+
+    - name: Make sure java is installed on the machine
+      yum:
+        name: java
+        state: present
+    - name: Restart elasticsearch service
+      service:
+        name: elasticsearch
+        state: "{{ item }}"
+        enabled: yes
+      with_items:
+        - restarted
+        - started
+      tags:
+        - always
+
+    - name: Copy firewall rules
       copy:
-        src: ../conf/ovirt-fluentd-forward.xml
+        src: "{{ item }}"
         dest: /etc/firewalld/services/
+      with_items:
+        - '../conf/fluentd-secure-forward.conf'
+        - '../conf/ovirt-fluentd-forward.xml'
     - name: restart firewalld service to reload config
       service:
         name: firewalld
@@ -77,6 +117,8 @@
         permanent: true
         immediate: yes
         state: enabled
+
+    # TODO: Is this still needed?
     - name: Install secure forward rubygem
       yum:
         name: rubygem-fluent-plugin-secure-forward
@@ -113,7 +155,7 @@
         - always
 
 - name: Set-up Kibana
-  hosts: all
+  hosts: metrics-store
   tasks:
     - name: Open firewall port for kibana
       firewalld:
@@ -133,32 +175,76 @@
         - started
       tags:
         - always
+# TODO: Escaping " is hell in ansible if you want to create indexes I sugest doing it manually
+#    - name: Set variables
+#      set_fact:
+#        kibana_url_metrics: 'http://localhost:9200/_template/ovirt_metrics'
+#        kibana_url_metadata: 'http://localhost:9200/_template/ovirt_metadata'
+#        kibana_template_ovirt_metrics: "{ \"template\": \"ovirt-metrics-\", \"order\": 1, \"settings\": { \"number_of_shards\": 1 , \"number_of_replicas\": 1 }, \"mappings\": { \"host_statistics\": { \"_parent\": { \"type\": \"host_metadata\" }, \"dynamic_templates\": [ { \"strings\": { \"mapping\": { \"index\": \"not_analyzed\", \"type\": \"string\" }, \"match_mapping_type\": \"string\", \"match\": \"\" } } ] } } }"
+#        kibana_template_ovirt_metadata: '{ "template": "ovirt-metadata*", "order": 1, "settings": { "number_of_shards": 1, "number_of_replicas": 1 }, "mappings": { "vm_metadata": { "dynamic_templates": [ { "strings": { "mapping": { "index": "not_analyzed", "type": "string" }, "match_mapping_type": "string", "match": "" } } ] }, "host_metadata": { "dynamic_templates": [ { "strings": { "mapping": { "index": "not_analyzed", "type": "string" }, "match_mapping_type": "string", "match": "" } } ] } } }'
+#    - name: Create index ovirt-metrics-
+#      shell: "curl -XPUT {{ kibana_url_metrics }}  -d  {{ kibana_template_ovirt_metrics }}"
+#      delegate_to: "{{ groups['metrics-store'][0] }}"
+#    - name: Create index ovirt-metadata
+#      command: curl -XPUT "{{ kibana_url_metadata }}"  -d  "{{ kibana_template_ovirt_metadata }}"
+#      delegate_to: "{{ groups['metrics-store'][0] }}"
 
-    - name: Set variables
-      set_fact:
-        kibana_url_metrics: 'http://localhost:9200/_template/ovirt_metrics'
-        kibana_url_metadata: 'http://localhost:9200/_template/ovirt_metadata'
-        kibana_template_ovirt_metrics: '\{ "template": "ovirt-metrics-", "order": 1, "settings": { "number_of_shards": 1 , "number_of_replicas": 1 }, "mappings": { "host_statistics": { "_parent": { "type": "host_metadata" }, "dynamic_templates": [ { "strings": { "mapping": { "index": "not_analyzed", "type": "string" }, "match_mapping_type": "string", "match": "" } } ] } } }'
-        kibana_template_ovirt_metadata: '\{ "template": "ovirt-metadata*", "order": 1, "settings": { "number_of_shards": 1, "number_of_replicas": 1 }, "mappings": { "vm_metadata": { "dynamic_templates": [ { "strings": { "mapping": { "index": "not_analyzed", "type": "string" }, "match_mapping_type": "string", "match": "" } } ] }, "host_metadata": { "dynamic_templates": [ { "strings": { "mapping": { "index": "not_analyzed", "type": "string" }, "match_mapping_type": "string", "match": "" } } ] } } }'
-    - name: Create index ovirt-metrics-
-      command: curl -XPUT "{{ kibana_url_metrics }}"  -d  "{{ kibana_template_ovirt_metrics }}"
-    - name: Create index ovirt-metadata
-      command: curl -XPUT "{{ kibana_url_metadata }}"  -d  "{{ kibana_template_ovirt_metadata }}"
 
-- name: Start elasticsearch service and check its running
-  hosts: all
+    - name: Fetch fluentd certificate from metrics machine
+      fetch:
+        src: /etc/pki/fluentd/requests/fluentd-request.pem
+        dest: /tmp/
+
+- name: Download certificates to engine machine
+  hosts: engine
+  vars:
+    sed_content: 's;subject= \(/C=[^/]*/O=[^/]*\)/.*;\1;'
   tasks:
-    - name: Make sure java is installed on the machine
-      yum:
-        name: java
+    - name: Save metrics store machine id
+      set_fact:
+        metrics_store_ip: "{{ groups['metrics-store'][0] }}"
+        metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
+    - name: Download ca cert to engine machine
+      copy:
+        src: "/tmp/{{ metrics_store_ip }}/etc/pki/fluentd/requests/fluentd-request.pem"
+        dest: "/etc/pki/ovirt-engine/requests/{{ metrics_store_fqdn }}.req"
+    - name: Get subject of cert  by openssl
+      shell: openssl x509 -in /etc/pki/ovirt-engine/ca.pem -noout -subject  | sed -e 's;subject= ;;' -e 's;/CN=[^/]*;;'
+      register: subject
+    - name: Create certificate of ovirt-engine for fluentd
+      command: "/usr/share/ovirt-engine/bin/pki-enroll-request.sh --name={{ metrics_store_fqdn }} --subject={{ subject.stdout }}/CN={{ metrics_store_fqdn }}"
+    - name: store certificate on metrics store machine
+      fetch:
+        src: "/etc/pki/ovirt-engine/certs/{{ metrics_store_fqdn }}.cer"
+        dest: /tmp/
+
+- name: Store engine certificate to metrics store
+  hosts: metrics-store
+  tasks:
+    - name: Save engine ip
+      set_fact:
+        engine_ip: "{{ groups['engine'][0] }}"
+        metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
+    - name: Copy certificate
+      copy:
+        src: "/tmp/{{ engine_ip }}/etc/pki/ovirt-engine/certs/{{ metrics_store_fqdn }}.cer"
+        dest: /etc/pki/fluentd/certs/fluentd-cert.pem
+
+- name: Create config for reports on engine machine
+  hosts: engine
+  tasks:
+    - name: Save metrics store machine id
+      set_fact:
+        metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
+    - name: Create config file
+      file:
+        path: /etc/ovirt-engine-metrics/config.yml
+    - name: Add config values
+      lineinfile:
+        dest: /etc/ovirt-engine-metrics/config.yml
+        line: "{{ item }}"
         state: present
-    - name: Restart elasticsearch service
-      service:
-        name: elasticsearch
-        state: "{{ item }}"
-        enabled: yes
       with_items:
-        - restarted
-        - started
-      tags:
-        - always
+        - "local_fluentd_ca_cert_path: /etc/ovirt-engine-metrics/fluentd_ca_cert.pem"
+        - "fluentd_shared_key: topsecret"
+        - "fluentd_fluentd_host: {{ metrics_store_fqdn }}"
