@@ -242,6 +242,7 @@
     - name: Create config file
       file:
         path: /etc/ovirt-engine-metrics/config.yml
+        state: touch
     - name: Add config values
       lineinfile:
         dest: /etc/ovirt-engine-metrics/config.yml
