@@ -15,6 +15,16 @@
       get_url:
         url: "{{ elastic_url }}"
         dest: "{{ file_path }}"
+    - name: Import gpg key for kibana
+      rpm_key:
+        key: https://packages.elastic.co/GPG-KEY-elasticsearch
+        state: present
+    - name: Set up repository for kibana
+      copy:
+        src: ../conf/kibana.repo
+        dest: /etc/yum.repos.d/
+        mode: 0644
+        backup: yes
     - name: Install the rpm of elastic search
       yum:
         name: "{{ file_path }}"
@@ -53,16 +63,12 @@
       file:
         state: directory
         path: /etc/fluentd/fluent.conf.d
-        owner: fluentd
-        group: fluentd
 
 
     - name: Download config for fluentd to metrics machine
       copy:
         src: ../conf/metrics-store-fluentd.conf
         dest: /etc/fluentd/fluent.conf
-        owner: fluentd
-        group: fluentd
         mode: 0644
         backup: yes
 
@@ -70,8 +76,6 @@
       copy:
         src: ../conf/fluentd-secure-forward.conf
         dest: /etc/fluentd/fluent.conf.d/fluentd-secure-forward.conf
-        owner: fluentd
-        group: fluentd
         mode: 0644
 
     - name: Enable listening of elasticsearch
@@ -121,7 +125,7 @@
         - 'ovirt-fluentd-forward'
         - 'ovirt-fluentd-secure-forward'
 
-    # TODO: Is this still needed?
+    # TODO: Is this still needed? yes
     - name: Install secure forward rubygem
       yum:
         name: rubygem-fluent-plugin-secure-forward
@@ -132,8 +136,8 @@
         path: "{{ item }}"
         state: directory
         mode: 750
-        owner: fluentd
-        group: fluentd
+#        owner: fluentd
+#        group: fluentd
       with_items:
         - "/etc/pki/fluentd/certs"
         - "/etc/pki/fluentd/requests"
