@@ -41,8 +41,7 @@
         - "kibana"
         - "fluentd"
         - "rubygem-fluent-plugin-elasticsearch"
-        - "rsync"
-    - name: Start rsync
+    - name: Start firewalld
       service:
         name: firewalld
         state: started
@@ -236,6 +235,18 @@
       copy:
         src: "/tmp/{{ engine_ip }}/etc/pki/ovirt-engine/certs/{{ metrics_store_fqdn }}.cer"
         dest: /etc/pki/fluentd/certs/fluentd-cert.pem
+    - name: Restart fluentd service
+      service:
+        name: fluentd
+        state: "{{ item }}"
+        enabled: yes
+      with_items:
+        - restarted
+        - started
+      tags:
+        - always
+
+
 
 - name: Create config for reports on engine machine
   hosts: engine
