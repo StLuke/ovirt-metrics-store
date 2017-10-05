@@ -1,0 +1,83 @@
+---
+- name: Provisioning a machine to run ViaQ
+  hosts: metrics-store
+  tasks:
+      - name: Save metrics store machine fqdn
+      set_fact:
+        metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
+    - name: provide an ssh pubkey for this user account
+      shell: ssh-keygen -b 2048 -t rsa -f /root/.ssh/id_rsa -q -N "" -y
+    - name: add the ssh pubkey to the user account
+      shell: cat /root/.ssh/id_rsa.pub >> /root/.ssh/authorized_keys
+    - name: add the ssh hostkey for localhost to your SSH known_hosts
+      shell: ssh-keyscan -H localhost >> /root/.ssh/known_hosts
+    - name: add the ssh hostkey for public_hostname to your SSH known_hosts
+      shell: ssh-keyscan -H  "{{ metrics_store_fqdn }}" >> /root/.ssh/known_hosts
+    - name: allow connections on the following ports/protocols 22, 80, 443, 8443, 24284
+      firewalld:
+        port: "{{ item }}"
+        permanent: true
+        state: enabled
+      with_items:
+        - 80/tcp
+        - 443/tcp
+        - 8443/tcp
+        - 24284/tcp
+    - name: ViaQ on Origin requires these Yum Repo
+      copy:
+        src: ../conf/viaq.repo
+        dest: /etc/yum.repos.d/
+        mode: 0644
+        backup: yes
+    - name: install the following packages docker, iptables-services & NetworkManager
+      yum:
+        name: "{{ item }}"
+        state: "present"
+      with_items:
+        - "docker"
+        - "iptables-services"
+        - "NetworkManager"
+    - name: You'll also need to enable and start NetworkManager
+      service:
+        name: NetworkManager
+        state: started
+        enabled: yes
+    - name: ensure file exists
+      file:
+        path: /etc/sudoers.d/999-cloud-init-requiretty
+        state: touch
+    - name: need to configure sudo to not require a tty
+      lineinfile:
+        path: /etc/sudoers.d/999-cloud-init-requiretty
+        line: 'Defaults !requiretty'
+
+- name: Installing ViaQ
+  hosts: metrics-store
+  tasks:
+    - name: install packages
+      yum:
+        name: "{{ item }}"
+        state: "present"
+      with_items:
+        - "openshift-ansible"
+        - "openshift-ansible-callback-plugins"
+        - "openshift-ansible-filter-plugins"
+        - "openshift-ansible-lookup-plugins"
+        - "openshift-ansible-playbooks"
+        - "openshift-ansible-roles"
+    - name: Copy inventory and vars.yml
+      copy:
+        src: "../conf/{{ item }}"
+        dest: /root/
+        mode: 0644
+      with_items:
+        - "vars.yml"
+        - "ansible-inventory"
+    - name: Run viaq playbooks
+      shell: ANSIBLE_LOG_PATH=/tmp/ansible.log ansible-playbook -v -e @/root/vars.yml -i /root/ansible-inventory /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
+    - name: Wait for all pods up
+      shell: oc get pods --no-headers=true | sed 's/^[a-z0-9-]* *[0-9/]* *\([a-zA-Z]*\) .*$/\1/g' | uniq
+      register: pod_status
+      retries: 15
+      delay: 60
+      until: ( "Running" in pod_status.stdout )
