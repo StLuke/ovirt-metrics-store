@@ -1,4 +1,15 @@
 ---
+- name: Configure /etc/hosts for engine machine
+  hosts: all
+  tasks:
+    - set_fact:
+        metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
+        metrics_store_ip: "{{ groups['metrics-store'][0] }}"
+    - name: edit /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ metrics_store_ip }} {{ metrics_store_fqdn}} openshift.{{ metrics_store_fqdn}} mux.{{ metrics_store_fqdn}} kibana.{{ metrics_store_fqdn}}"
+
 - name: Provisioning a machine to run ViaQ
   hosts: metrics-store
   tasks:
@@ -81,3 +92,66 @@
       retries: 15
       delay: 60
       until: ( "Running" in pod_status.stdout )
+
+- name: Post-Install
+  hosts: metrics-store
+  tasks:
+    - name: change project
+      shell: oc project logging
+    - name: Getting the shared key
+      shell: oc get secret logging-mux --template='{{ '{{' }}index .data "ca"{{ '}}' }}'  | base64 -d > mux-ca.crt
+    - name: Getting CA cert
+      shell: oc get secret logging-mux --template='{{ '{{' }}index .data "shared_key"{{ '}}' }}' | base64 -d > mux-shared-key
+    - name: Do magic with admin
+      shell:  oc login --username=admin --password=admin
+    - name: Do magic with sysytemadmin
+      shell: oc login --username=system:admin
+    - name: Do magic with cluster-admin
+      shell: oadm policy add-cluster-role-to-user cluster-admin admin
+    - name: Fetch the created files
+      fetch:
+        src: "{{ item }}"
+        dest: /tmp/
+        flat: yes
+      with_items:
+        - "/root/mux-ca.crt"
+        - "/root/mux-shared-key"
+
+- name: Copy metrics store configuration to engine machine
+  hosts: engine
+  tasks:
+    - name: store certificate on engine machine
+      copy:
+        src: "{{ item }}"
+        dest: /etc/ovirt-engine-metrics/metrics-ca.crt
+      with_items:
+        - "/tmp/mux-ca.crt"
+        - "/tmp/mux-shared-key"
+
+- name: Configure config.yml on engine machine
+  hosts: engine
+  vars:
+     secret: "{{ lookup('file', '/tmp/mux-shared-key') }}"
+  tasks:
+    - name: ensure config.yml exists
+      file:
+        path: /etc/ovirt-engine-metrics/config.yml
+        state: touch
+    - name: Save metrics store machine fqdn
+      set_fact:
+        metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
+    - name: add parameters to config.yml file
+      lineinfile:
+        path: /etc/ovirt-engine-metrics/config.yml
+        line: "{{ item }}"
+      with_items:
+        - "fluentd_fluentd_host: {{ metrics_store_fqdn }}"
+        - "local_fluentd_ca_cert_path: /etc/ovirt-engine-metrics/metrics-ca.crt"
+        - "fluentd_shared_key: {{ secret }}"
+        - "ovirt_env_name: test-engine"
+
+- name: Run ansible playbook to connect to metrics store
+  hosts: engine
+  tasks:
+    - name: Run metrics playbook
+      shell: /usr/share/ovirt-engine-metrics/setup/ansible/configure_ovirt_machines_for_metrics.sh
