@@ -2,6 +2,8 @@
 - name: Configure /etc/hosts for engine machine
   hosts: all
   tasks:
+    - debug:
+        msg: "{{ groups }}"
     - set_fact:
         metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
         metrics_store_ip: "{{ groups['metrics-store'][0] }}"
@@ -13,11 +15,15 @@
 - name: Provisioning a machine to run ViaQ
   hosts: metrics-store
   tasks:
-      - name: Save metrics store machine fqdn
+    - name: Save metrics store machine fqdn
       set_fact:
         metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
+    - name: Creates .ssh directory
+      file:
+        path: /root/.ssh
+        state: directory
     - name: provide an ssh pubkey for this user account
-      shell: ssh-keygen -b 2048 -t rsa -f /root/.ssh/id_rsa -q -N "" -y
+      shell: ssh-keygen -b 2048 -t rsa -f /root/.ssh/id_rsa -q -N ""
     - name: add the ssh pubkey to the user account
       shell: cat /root/.ssh/id_rsa.pub >> /root/.ssh/authorized_keys
     - name: add the ssh hostkey for localhost to your SSH known_hosts
