@@ -24,6 +24,10 @@ openshift_master_default_subdomain: "{{ openshift_public_hostname }}"
 openshift_logging_mux_namespaces:
     - "ovirt-metrics-test-engine"
     - "ovirt-logs-test-engine"
+    - "ovirt-metrics-test-engine2"
+    - "ovirt-logs-test-engine2"
+    - "ovirt-metrics-test-engine3"
+    - "ovirt-logs-test-engine3"
 
 #- this-is-a-namespace
 #- another-namespace

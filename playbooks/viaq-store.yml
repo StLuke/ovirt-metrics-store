@@ -2,8 +2,6 @@
 - name: Configure /etc/hosts for engine machine
   hosts: all
   tasks:
-    - debug:
-        msg: "{{ groups }}"
     - set_fact:
         metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
         metrics_store_ip: "{{ groups['metrics-store'][0] }}"
@@ -128,11 +126,12 @@
   tasks:
     - name: store certificate on engine machine
       copy:
-        src: "{{ item }}"
-        dest: /etc/ovirt-engine-metrics/metrics-ca.crt
+        src: "/tmp/{{ item }}"
+        dest: "/etc/ovirt-engine-metrics/{{ item }}"
       with_items:
-        - "/tmp/mux-ca.crt"
-        - "/tmp/mux-shared-key"
+        - "mux-ca.crt"
+        - "mux-shared-key"
+
 
 - name: Configure config.yml on engine machine
   hosts: engine
@@ -146,18 +145,44 @@
     - name: Save metrics store machine fqdn
       set_fact:
         metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
-    - name: add parameters to config.yml file
+    - name: add fluentd_fluentd_host parameters to config.yml file
       lineinfile:
         path: /etc/ovirt-engine-metrics/config.yml
-        line: "{{ item }}"
-      with_items:
-        - "fluentd_fluentd_host: {{ metrics_store_fqdn }}"
-        - "local_fluentd_ca_cert_path: /etc/ovirt-engine-metrics/metrics-ca.crt"
-        - "fluentd_shared_key: {{ secret }}"
-        - "ovirt_env_name: test-engine"
+        line: "fluentd_fluentd_host: {{ metrics_store_fqdn }}"
+        regexp: "^fluentd_fluentd_host"
+    - name: add local_fluentd_ca_cert_path parameters to config.yml file
+      lineinfile:
+        path: /etc/ovirt-engine-metrics/config.yml
+        line: "local_fluentd_ca_cert_path: /etc/ovirt-engine-metrics/mux-ca.crt"
+        regexp: "^local_fluentd_ca_cert_path"
+    - name: add ovirt_env_name parameters to config.yml file
+      lineinfile:
+        path: /etc/ovirt-engine-metrics/config.yml
+        line: "ovirt_env_name: test-engine"
+        regexp: "^ovirt_env_name"
+    - name: add fluentd_shared_key parameters to config.yml file
+      lineinfile:
+        path: /etc/ovirt-engine-metrics/config.yml
+        line: "fluentd_shared_key: {{ secret }}"
+        regexp: "^fluentd_shared_key"
 
 - name: Run ansible playbook to connect to metrics store
   hosts: engine
   tasks:
     - name: Run metrics playbook
       shell: /usr/share/ovirt-engine-metrics/setup/ansible/configure_ovirt_machines_for_metrics.sh
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
