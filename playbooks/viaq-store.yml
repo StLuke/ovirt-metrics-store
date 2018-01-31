@@ -220,8 +220,7 @@
         msg: "Debug - {{ hostvars[groups['metrics-store'][0]] }}"
     - name: Save metrics store machine fqdn
       set_fact:
-        #metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
-        metrics_store_fqdn: 10-37-138-200.rhev.lab.eng.brq.redhat.com
+        metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
     - name: add ovirt_env_name parameters to config.yml file
       lineinfile:
         dest: /etc/ovirt-engine-metrics/config.yml
