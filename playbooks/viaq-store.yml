@@ -7,8 +7,8 @@
         metrics_store_ip: "{{ groups['metrics-store'][0] }}"
     - name: edit /etc/hosts
       lineinfile:
-        path: /etc/hosts
-        line: "{{ metrics_store_ip }} {{ metrics_store_fqdn}} openshift.{{ metrics_store_fqdn}} mux.{{ metrics_store_fqdn}} kibana.{{ metrics_store_fqdn}}"
+        dest: "/etc/hosts"
+        line: "{{ metrics_store_ip }} {{ metrics_store_fqdn}} kopf.{{ metrics_store_fqdn}} mux.{{ metrics_store_fqdn}} openshift.{{ metrics_store_fqdn}} kibana.{{ metrics_store_fqdn}} es.{{ metrics_store_fqdn}}"
 
 - name: Provisioning a machine to run ViaQ
   hosts: metrics-store
@@ -20,6 +20,37 @@
       file:
         path: /root/.ssh
         state: directory
+    - name: ViaQ on Origin requires these Yum Repo
+      copy:
+        src: ../conf/openshift.repo
+        dest: /etc/yum.repos.d/
+        mode: 0644
+        backup: yes
+    - name: install the following necessary packages
+      yum:
+        name: "{{ item }}"
+        state: "present"
+      with_items:
+        - "docker"
+        - "iptables"
+        - "iptables-services"
+        - "NetworkManager"
+        - "policycoreutils-python"
+        - "git"
+        - "net-tools"
+        - "bind-utils"
+        - "bridge-utils"
+        - "bash-completion"
+        - "kexec-tools"
+        - "sos"
+        - "psacct"
+        - "atomic-openshift-utils"
+        - "atomic-openshift-excluder"
+        - "atomic-openshift-docker-excluder"
+    - name: Remove old ssh key
+      file:
+        state: absent
+        path: /root/.ssh/id_rsa
     - name: provide an ssh pubkey for this user account
       shell: ssh-keygen -b 2048 -t rsa -f /root/.ssh/id_rsa -q -N ""
     - name: add the ssh pubkey to the user account
@@ -29,29 +60,13 @@
     - name: add the ssh hostkey for public_hostname to your SSH known_hosts
       shell: ssh-keyscan -H  "{{ metrics_store_fqdn }}" >> /root/.ssh/known_hosts
     - name: allow connections on the following ports/protocols 22, 80, 443, 8443, 24284
-      firewalld:
-        port: "{{ item }}"
-        permanent: true
-        state: enabled
+      shell: "iptables -I INPUT -p tcp --dport {{ item }} -j ACCEPT"
       with_items:
-        - 80/tcp
-        - 443/tcp
-        - 8443/tcp
-        - 24284/tcp
-    - name: ViaQ on Origin requires these Yum Repo
-      copy:
-        src: ../conf/viaq.repo
-        dest: /etc/yum.repos.d/
-        mode: 0644
-        backup: yes
-    - name: install the following packages docker, iptables-services & NetworkManager
-      yum:
-        name: "{{ item }}"
-        state: "present"
-      with_items:
-        - "docker"
-        - "iptables-services"
-        - "NetworkManager"
+        - 80
+        - 443
+        - 8443
+        - 24284
+        - 9200
     - name: You'll also need to enable and start NetworkManager
       service:
         name: NetworkManager
@@ -63,8 +78,26 @@
         state: touch
     - name: need to configure sudo to not require a tty
       lineinfile:
-        path: /etc/sudoers.d/999-cloud-init-requiretty
+        dest: /etc/sudoers.d/999-cloud-init-requiretty
         line: 'Defaults !requiretty'
+
+
+- name: Make persistent storage
+  hosts: metrics-store
+  tasks:
+    - name: Creates directory for storage
+      file:
+        path: /var/lib/elasticsearch
+        state: directory
+        mode: 0660
+    - name: Change group owner
+      shell: chgrp 65534 /var/lib/elasticsearch
+    - name: Change context
+      shell: semanage fcontext -a -t svirt_sandbox_file_t "/var/lib/elasticsearch(/.*)?"
+    - name: Restore context
+      shell: restorecon -R -v /var/lib/elasticsearch
+
+
 
 - name: Installing ViaQ
   hosts: metrics-store
@@ -87,25 +120,58 @@
         mode: 0644
       with_items:
         - "vars.yml"
-        - "ansible-inventory"
+        - "ansible-inventory-openshift"
     - name: Run viaq playbooks
-      shell: ANSIBLE_LOG_PATH=/tmp/ansible.log ansible-playbook -v -e @/root/vars.yml -i /root/ansible-inventory /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
+      shell: ANSIBLE_LOG_PATH=/tmp/ansible.log ansible-playbook -v -e @/root/vars.yml -i /root/ansible-inventory-openshift /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
+    - name: change project
+      shell: oc project logging
     - name: Wait for all pods up
       shell: oc get pods --no-headers=true | sed 's/^[a-z0-9-]* *[0-9/]* *\([a-zA-Z]*\) .*$/\1/g' | uniq
       register: pod_status
       retries: 15
       delay: 60
       until: ( "Running" in pod_status.stdout )
+    - set_fact:
+        metrics_store_ip: "{{ hostvars[groups['metrics-store'][0]]['ansible_default_ipv4']['address'] }}"
+    - name: Open elasticsearch for connection
+      shell: "oc patch svc logging-es -p '{\"spec\":{\"externalIPs\":[\"{{ metrics_store_ip }}\"]}}'"
+    - name: edit configmap to store only last 3 days
+      shell: "oc patch configmap logging-curator -p '{\"data\":{\"config.yaml\":\"# Logging example curator config file\\novirt-metrics-test:\\n  delete:\\n    days: 3\\n# uncomment and use this to override the defaults from env vars\\n#.defaults:\\n#  delete:\\n#    days: 30\\n#  runhour: 0\\n#  runminute: 0\\n\\n# to keep ops logs for a different duration:\\n#.operations:\\n#  delete:\\n#    weeks: 8\\n\\n# example for a normal project\\n#myapp:\\n#  delete:\\n#    weeks: 1\\n\"}}'"
+
+
+- name: Enable elasticsearch mount
+  hosts: metrics-store
+  tasks:
+    - name: change project
+      shell: oc project logging
+    - name: Add permissions to the directory
+      shell: oadm policy add-scc-to-user hostmount-anyuid system:serviceaccount:logging:aggregated-logging-elasticsearch
+    - name: Cancel last rollout
+      shell: oc rollout cancel $( oc get -n logging dc -l component=es -o name )
+    - name: Wait till done
+      shell: oc rollout status -w $( oc get -n logging dc -l component=es -o name )
+    - name: Get latest version
+      shell: oc rollout latest $( oc get -n logging dc -l component=es -o name )
+    - name: Wait till done
+      shell: oc rollout status -w $( oc get -n logging dc -l component=es -o name )
+
+
 
 - name: Post-Install
   hosts: metrics-store
   tasks:
     - name: change project
       shell: oc project logging
-    - name: Getting the shared key
-      shell: oc get secret logging-mux --template='{{ '{{' }}index .data "ca"{{ '}}' }}'  | base64 -d > mux-ca.crt
     - name: Getting CA cert
-      shell: oc get secret logging-mux --template='{{ '{{' }}index .data "shared_key"{{ '}}' }}' | base64 -d > mux-shared-key
+      shell: oc get secret logging-fluentd --template='{{ '{{' }}index .data "ca"{{ '}}' }}'  | base64 -d > es-ca.crt
+    - name: Getting client CA cert
+      shell: oc get secret logging-fluentd --template='{{ '{{' }}index .data "cert"{{ '}}' }}'  | base64 -d > es-client-ca.crt
+    - name: Getting the shared key
+      shell: oc get secret logging-fluentd --template='{{ '{{' }}index .data "key"{{ '}}' }}' | base64 -d > es-shared-key
+    - name: get ovirt_env_uuid_metrics
+      shell: oc get project ovirt-metrics-test-engine -o jsonpath='{.metadata.uid}' > ovirt_env_uuid_metrics
+    - name: get ovirt_env_uuid_logs
+      shell: oc get project ovirt-logs-test-engine -o jsonpath='{.metadata.uid}' > ovirt_env_uuid_logs
     - name: Do magic with admin
       shell:  oc login --username=admin --password=admin
     - name: Do magic with sysytemadmin
@@ -118,8 +184,11 @@
         dest: /tmp/
         flat: yes
       with_items:
-        - "/root/mux-ca.crt"
-        - "/root/mux-shared-key"
+        - "/root/es-ca.crt"
+        - "/root/es-client-ca.crt"
+        - "/root/es-shared-key"
+        - "/root/ovirt_env_uuid_metrics"
+        - "/root/ovirt_env_uuid_logs"
 
 - name: Copy metrics store configuration to engine machine
   hosts: engine
@@ -129,60 +198,68 @@
         src: "/tmp/{{ item }}"
         dest: "/etc/ovirt-engine-metrics/{{ item }}"
       with_items:
-        - "mux-ca.crt"
-        - "mux-shared-key"
+        - "es-ca.crt"
+        - "es-client-ca.crt"
+        - "es-shared-key"
+        - "ovirt_env_uuid_metrics"
+        - "ovirt_env_uuid_logs"
 
 
 - name: Configure config.yml on engine machine
   hosts: engine
   vars:
-     secret: "{{ lookup('file', '/tmp/mux-shared-key') }}"
+     ovirt_env_uuid_metrics: "{{ lookup('file', '/tmp/ovirt_env_uuid_metrics') }}"
+     ovirt_env_uuid_logs: "{{ lookup('file', '/tmp/ovirt_env_uuid_logs') }}"
   tasks:
     - name: ensure config.yml exists
       file:
         path: /etc/ovirt-engine-metrics/config.yml
         state: touch
+    - name: Display all variables/facts known for a host
+      debug:
+        msg: "Debug - {{ hostvars[groups['metrics-store'][0]] }}"
     - name: Save metrics store machine fqdn
       set_fact:
-        metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
-    - name: add fluentd_fluentd_host parameters to config.yml file
-      lineinfile:
-        path: /etc/ovirt-engine-metrics/config.yml
-        line: "fluentd_fluentd_host: {{ metrics_store_fqdn }}"
-        regexp: "^fluentd_fluentd_host"
-    - name: add local_fluentd_ca_cert_path parameters to config.yml file
-      lineinfile:
-        path: /etc/ovirt-engine-metrics/config.yml
-        line: "local_fluentd_ca_cert_path: /etc/ovirt-engine-metrics/mux-ca.crt"
-        regexp: "^local_fluentd_ca_cert_path"
+        #metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
+        metrics_store_fqdn: 10-37-138-200.rhev.lab.eng.brq.redhat.com
     - name: add ovirt_env_name parameters to config.yml file
       lineinfile:
-        path: /etc/ovirt-engine-metrics/config.yml
+        dest: /etc/ovirt-engine-metrics/config.yml
         line: "ovirt_env_name: test-engine"
         regexp: "^ovirt_env_name"
-    - name: add fluentd_shared_key parameters to config.yml file
+    - name: add fluentd_elasticsearch_host parameters to config.yml file
       lineinfile:
-        path: /etc/ovirt-engine-metrics/config.yml
-        line: "fluentd_shared_key: {{ secret }}"
-        regexp: "^fluentd_shared_key"
+        dest: /etc/ovirt-engine-metrics/config.yml
+        line: "fluentd_elasticsearch_host: {{ metrics_store_fqdn }}"
+        regexp: "^fluentd_elasticsearch_host"
+    - name: add ovirt_env_uuid_metrics namespace var
+      lineinfile:
+        dest: /etc/ovirt-engine-metrics/config.yml
+        line: "ovirt_env_uuid_metrics: {{ ovirt_env_uuid_metrics }}"
+        regexp: "^ovirt_env_uuid_metrics"
+    - name: add ovirt_env_uuid_logs namespace var
+      lineinfile:
+        dest: /etc/ovirt-engine-metrics/config.yml
+        line: "ovirt_env_uuid_logs: {{ ovirt_env_uuid_logs }}"
+        regexp: "^ovirt_env_uuid_logs"
+    - name: add local_fluentd_elasticsearch_ca_cert_path parameters to config.yml file
+      lineinfile:
+        dest: /etc/ovirt-engine-metrics/config.yml
+        line: "local_fluentd_elasticsearch_ca_cert_path: /etc/ovirt-engine-metrics/es-ca.crt"
+        regexp: "^local_fluentd_elasticsearch_ca_cert_path"
+    - name: add local_fluentd_elasticsearch_client_cert_path parameters to config.yml file
+      lineinfile:
+        dest: /etc/ovirt-engine-metrics/config.yml
+        line: "local_fluentd_elasticsearch_client_cert_path: /etc/ovirt-engine-metrics/es-client-ca.crt"
+        regexp: "^local_fluentd_elasticsearch_client_cert_path"
+    - name: add local_fluentd_elasticsearch_client_key_path parameters to config.yml file
+      lineinfile:
+        dest: /etc/ovirt-engine-metrics/config.yml
+        line: "local_fluentd_elasticsearch_client_key_path: /etc/ovirt-engine-metrics/es-shared-key"
+        regexp: "^local_fluentd_elasticsearch_client_key_path"
 
 - name: Run ansible playbook to connect to metrics store
   hosts: engine
   tasks:
     - name: Run metrics playbook
       shell: /usr/share/ovirt-engine-metrics/setup/ansible/configure_ovirt_machines_for_metrics.sh
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
