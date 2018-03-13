@@ -119,7 +119,6 @@
         dest: /root/
         mode: 0644
       with_items:
-        - "vars.yml"
         - "ansible-inventory-openshift"
     - name: Run viaq playbooks
       shell: ANSIBLE_LOG_PATH=/tmp/ansible.log ansible-playbook -v -e @/root/vars.yml -i /root/ansible-inventory-openshift /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
