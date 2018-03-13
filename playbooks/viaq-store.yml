@@ -113,15 +113,8 @@
         - "openshift-ansible-lookup-plugins"
         - "openshift-ansible-playbooks"
         - "openshift-ansible-roles"
-    - name: Copy inventory and vars.yml
-      copy:
-        src: "../conf/{{ item }}"
-        dest: /root/
-        mode: 0644
-      with_items:
-        - "ansible-inventory-openshift"
     - name: Run viaq playbooks
-      shell: ANSIBLE_LOG_PATH=/tmp/ansible.log ansible-playbook -v -e @/root/vars.yml -i /root/ansible-inventory-openshift /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
+      shell: ANSIBLE_LOG_PATH=/tmp/ansible.log ansible-playbook -v -e @/root/vars.yml -i /root/ ansible-inventory-origin-36-aio /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
     - name: change project
       shell: oc project logging
     - name: Wait for all pods up
