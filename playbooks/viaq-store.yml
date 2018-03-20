@@ -114,7 +114,7 @@
         - "openshift-ansible-playbooks"
         - "openshift-ansible-roles"
     - name: Run viaq playbooks
-      shell: ANSIBLE_LOG_PATH=/tmp/ansible.log ansible-playbook -v -e @/root/vars.yml -i "{{ ansible_inventory_file }}" /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
+      shell: ANSIBLE_LOG_PATH=/tmp/ansible.log ansible-playbook -v -e @/root/vars.yml -i "{{ ansible_inventory_file | /root/ansible-inventory-origin-37-aio }}" /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
     - name: change project
       shell: oc project logging
     - name: Wait for all pods up
