@@ -146,6 +146,25 @@
       shell: oc rollout latest $( oc get -n logging dc -l component=es -o name )
     - name: Wait till done
       shell: oc rollout status -w $( oc get -n logging dc -l component=es -o name )
+      
+- name: Configure config.yml on engine machine
+  hosts: engine
+  tasks:
+    - name: ensure config.yml exists
+      file:
+        path: /etc/ovirt-engine-metrics/config.yml
+        state: touch
+    - name: Display all variables/facts known for a host
+      debug:
+        msg: "Debug - {{ hostvars[groups['metrics-store'][0]] }}"
+    - name: Save metrics store machine fqdn
+      set_fact:
+        metrics_store_fqdn: "{{ hostvars[groups['metrics-store'][0]]['ansible_fqdn'] }}"
+    - name: add ovirt_env_name parameters to config.yml file
+      lineinfile:
+        dest: /etc/ovirt-engine-metrics/config.yml
+        line: "ovirt_env_name: test-engine"
+        regexp: "^ovirt_env_name"
 
 - name: Run ansible playbook to connect to metrics store
   hosts: engine
