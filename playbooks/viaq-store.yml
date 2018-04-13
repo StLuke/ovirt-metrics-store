@@ -20,6 +20,7 @@
       file:
         path: /root/.ssh
         state: directory
+    # Todo: make openshift repo a variable
     - name: ViaQ on Origin requires these Yum Repo
       copy:
         src: ../conf/openshift.repo
@@ -81,7 +82,6 @@
         dest: /etc/sudoers.d/999-cloud-init-requiretty
         line: 'Defaults !requiretty'
 
-
 - name: Make persistent storage
   hosts: metrics-store
   tasks:
@@ -89,64 +89,16 @@
       file:
         path: /var/lib/elasticsearch
         state: directory
-        mode: 0660
+        mode: 0770
     - name: Change group owner
       shell: chgrp 65534 /var/lib/elasticsearch
     - name: Change context
-      shell: semanage fcontext -a -t svirt_sandbox_file_t "/var/lib/elasticsearch(/.*)?"
+      shell: semanage fcontext -a -t container_file_t "/var/lib/elasticsearch(/.*)?"
     - name: Restore context
       shell: restorecon -R -v /var/lib/elasticsearch
 
-
-
-- name: Installing ViaQ
-  hosts: metrics-store
-  tasks:
-    - name: install packages
-      yum:
-        name: "{{ item }}"
-        state: "present"
-      with_items:
-        - "openshift-ansible"
-        - "openshift-ansible-callback-plugins"
-        - "openshift-ansible-filter-plugins"
-        - "openshift-ansible-lookup-plugins"
-        - "openshift-ansible-playbooks"
-        - "openshift-ansible-roles"
-    - name: Run viaq playbooks
-      shell: ANSIBLE_LOG_PATH=/tmp/ansible.log ansible-playbook -v -e @/root/vars.yml -i "{{ ansible_inventory_file | /root/ansible-inventory-origin-37-aio }}" /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
-    - name: change project
-      shell: oc project logging
-    - name: Wait for all pods up
-      shell: oc get pods --no-headers=true | sed 's/^[a-z0-9-]* *[0-9/]* *\([a-zA-Z]*\) .*$/\1/g' | uniq
-      register: pod_status
-      retries: 15
-      delay: 60
-      until: ( "Running" in pod_status.stdout )
-    - set_fact:
-        metrics_store_ip: "{{ hostvars[groups['metrics-store'][0]]['ansible_default_ipv4']['address'] }}"
-    - name: Open elasticsearch for connection
-      shell: "oc patch svc logging-es -p '{\"spec\":{\"externalIPs\":[\"{{ metrics_store_ip }}\"]}}'"
-    - name: edit configmap to store only last 3 days
-      shell: "oc patch configmap logging-curator -p '{\"data\":{\"config.yaml\":\"# Logging example curator config file\\novirt-metrics-test:\\n  delete:\\n    days: 3\\n# uncomment and use this to override the defaults from env vars\\n#.defaults:\\n#  delete:\\n#    days: 30\\n#  runhour: 0\\n#  runminute: 0\\n\\n# to keep ops logs for a different duration:\\n#.operations:\\n#  delete:\\n#    weeks: 8\\n\\n# example for a normal project\\n#myapp:\\n#  delete:\\n#    weeks: 1\\n\"}}'"
-
-
-- name: Enable elasticsearch mount
-  hosts: metrics-store
-  tasks:
-    - name: change project
-      shell: oc project logging
-    - name: Add permissions to the directory
-      shell: oadm policy add-scc-to-user hostmount-anyuid system:serviceaccount:logging:aggregated-logging-elasticsearch
-    - name: Cancel last rollout
-      shell: oc rollout cancel $( oc get -n logging dc -l component=es -o name )
-    - name: Wait till done
-      shell: oc rollout status -w $( oc get -n logging dc -l component=es -o name )
-    - name: Get latest version
-      shell: oc rollout latest $( oc get -n logging dc -l component=es -o name )
-    - name: Wait till done
-      shell: oc rollout status -w $( oc get -n logging dc -l component=es -o name )
-      
+# TODO: Configure engine to connect to metrics-store
+# TODO: run metrics import inventory playbook
 - name: Configure config.yml on engine machine
   hosts: engine
   tasks:
@@ -165,6 +117,56 @@
         dest: /etc/ovirt-engine-metrics/config.yml
         line: "ovirt_env_name: test-engine"
         regexp: "^ovirt_env_name"
+     - name: add ovirt_env_name parameters to config.yml file
+      lineinfile:
+        dest: /etc/ovirt-engine-metrics/config.yml
+        line: "fluentd_elasticsearch_host: {{ metrics_store_fqdn }}"
+        regexp: "^fluentd_elasticsearch_host"
+
+- name: Installing ViaQ
+  hosts: metrics-store
+  tasks:
+    - name: install packages
+      yum:
+        name: "{{ item }}"
+        state: "present"
+      with_items:
+        - "openshift-ansible"
+        - "openshift-ansible-playbooks"
+        - "openshift-ansible-roles"
+     # TODO add mkdir - /usr/share/ansible/openshift-ansible/playbooks/openshift
+    - name: Run viaq playbooks
+      shell: ANSIBLE_LOG_PATH="/tmp/ansible-{{ item }}}.log" ansible-playbook -v -e @/root/vars.yml -i "{{ ansible_inventory_file | default(/root/ansible-inventory-origin-39-aio) }}" "/usr/share/ansible/openshift-ansible/playbooks{{ item }}}"
+      with_items:
+        - "prerequisites.yml"
+        - "openshift-node/network_manager.yml"
+        - "deploy_cluster.yml"
+    - name: change project
+      shell: oc project logging
+    - name: Wait for all pods up
+      shell: oc get pods --no-headers=true | sed 's/^[a-z0-9-]* *[0-9/]* *\([a-zA-Z]*\) .*$/\1/g' | uniq
+      register: pod_status
+      retries: 15
+      delay: 60
+      until: ( "Running" in pod_status.stdout )
+    - set_fact:
+        metrics_store_ip: "{{ hostvars[groups['metrics-store'][0]]['ansible_default_ipv4']['address'] }}"
+
+- name: Enable elasticsearch mount
+  hosts: metrics-store
+  tasks:
+    - name: change project
+      shell: oc project logging
+    - name: Add permissions to the directory
+      shell: oadm policy add-scc-to-user hostmount-anyuid system:serviceaccount:logging:aggregated-logging-elasticsearch
+    - name: Cancel last rollout
+      shell: oc rollout cancel $( oc get -n logging dc -l component=es -o name )
+    - name: Wait till done
+      shell: oc rollout status -w $( oc get -n logging dc -l component=es -o name )
+    - name: Get latest version
+      shell: oc rollout latest $( oc get -n logging dc -l component=es -o name )
+    - name: Wait till done
+      shell: oc rollout status -w $( oc get -n logging dc -l component=es -o name )
 
 - name: Run ansible playbook to connect to metrics store
   hosts: engine
